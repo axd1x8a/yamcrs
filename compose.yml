@@ -1,0 +1,16 @@
+services:
+  yamcrs:
+    restart: unless-stopped
+    container_name: yamcrs
+    image: yamcrs
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./db/:/yamcrs/db/
+      - ./assets/:/yamcrs/assets/
+    env_file:
+      - .env

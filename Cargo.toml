@@ -1,0 +1,21 @@
+[package]
+name = "yamcrs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+actix-web = "4"
+actix-files = "0.6"
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio-native-tls"] }
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+clap = { version = "4.4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"
+opt-level = "z"
