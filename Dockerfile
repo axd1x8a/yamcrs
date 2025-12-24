@@ -1,6 +1,8 @@
-FROM rust:latest AS builder
+FROM rust:alpine AS builder
 
 WORKDIR /yamcrs
+
+RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static
 
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
@@ -19,10 +21,5 @@ FROM scratch
 WORKDIR /yamcrs
 
 COPY --from=builder /yamcrs/artifacts/yamcrs /yamcrs/yamcrs
-
-COPY --from=builder /lib/x86_64-linux-gnu/libgcc_s.so.1 /lib/x86_64-linux-gnu/libgcc_s.so.1
-COPY --from=builder /lib/x86_64-linux-gnu/libm.so.6       /lib/x86_64-linux-gnu/libm.so.6
-COPY --from=builder /lib/x86_64-linux-gnu/libc.so.6       /lib/x86_64-linux-gnu/libc.so.6
-COPY --from=builder /lib64/ld-linux-x86-64.so.2           /lib64/ld-linux-x86-64.so.2
 
 CMD ["/yamcrs/yamcrs"]
