@@ -2,7 +2,7 @@ use actix_web::{App, HttpRequest, HttpResponse, HttpServer, Responder, get, web}
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use clap::Parser;
 use sqlx::SqlitePool;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
@@ -47,8 +47,13 @@ struct AppState {
     api_auth_token: Option<String>,
 }
 
-type DigitMap = HashMap<char, Arc<str>>;
-type ThemeMap = HashMap<Arc<str>, DigitMap>;
+type DigitMap = HashMap<char, String>;
+type ThemeMap = HashMap<Arc<str>, ThemeData>;
+
+struct ThemeData {
+    id_to_uri: HashMap<String, Arc<str>>,
+    digits: DigitMap,
+}
 
 async fn init_db(path: &str) -> SqlitePool {
     info!("initializing database at {}", path);
@@ -128,7 +133,9 @@ fn load_themes(dir: &str) -> ThemeMap {
         }
 
         let theme_name: Arc<str> = entry.file_name().to_string_lossy().into();
+        let mut uri_to_id: HashMap<Arc<str>, String> = HashMap::new();
         let mut digits = DigitMap::new();
+        let mut id_counter = 0;
         debug!("loading theme: {}", theme_name);
 
         let Ok(files) = std::fs::read_dir(entry.path()) else {
@@ -139,13 +146,20 @@ fn load_themes(dir: &str) -> ThemeMap {
         for file in files.flatten() {
             let path = file.path();
             if let Some((digit, uri)) = load_digit(&path) {
-                digits.insert(digit, uri);
+                let id = uri_to_id.entry(uri.clone()).or_insert_with(|| {
+                    let new_id = format!("i{}", id_counter);
+                    id_counter += 1;
+                    new_id
+                });
+                digits.insert(digit, id.clone());
             }
         }
 
         if !digits.is_empty() {
+            let id_to_uri: HashMap<String, Arc<str>> =
+                uri_to_id.into_iter().map(|(uri, id)| (id, uri)).collect();
             info!("loaded theme: {} with {} digits", theme_name, digits.len());
-            themes.insert(theme_name, digits);
+            themes.insert(theme_name, ThemeData { id_to_uri, digits });
         }
     }
 
@@ -168,23 +182,40 @@ fn load_digit(path: &Path) -> Option<(char, Arc<str>)> {
     Some((digit, uri.into()))
 }
 
-fn render_svg(digits: &DigitMap, count: i64) -> String {
+fn render_svg(theme_data: &ThemeData, count: i64) -> String {
     let text = format!("{:0>width$}", count, width = PAD_LENGTH);
-    let mut images = String::new();
 
-    for (i, ch) in text.chars().enumerate() {
-        let x = i as u32 * IMG_WIDTH;
-        if let Some(uri) = digits.get(&ch) {
-            images.push_str(&format!(
-                r#"<image x="{x}" y="0" width="{IMG_WIDTH}" height="{IMG_HEIGHT}" href="{uri}"/>"#
-            ));
-        }
-    }
+    let mut used_ids = HashSet::new();
+    let uses = text
+        .chars()
+        .enumerate()
+        .filter_map(|(i, ch)| {
+            theme_data.digits.get(&ch).map(|id| {
+                used_ids.insert(id.clone());
+                let x = i as u32 * IMG_WIDTH;
+                format!(r##"<use href="#{id}" x="{x}" y="0" width="{IMG_WIDTH}" height="{IMG_HEIGHT}"/>"##)
+            })
+        })
+        .collect::<Vec<_>>()
+        .join("");
+
+    let defs = used_ids
+        .iter()
+        .filter_map(|id| {
+            theme_data.id_to_uri.get(id).map(|uri| {
+                format!(
+                    r#"<image id="{id}" width="{IMG_WIDTH}" height="{IMG_HEIGHT}" href="{uri}"/>"#
+                )
+            })
+        })
+        .collect::<Vec<_>>()
+        .join("");
 
     SVG_TEMPLATE
         .replace("{width}", &(PAD_LENGTH as u32 * IMG_WIDTH).to_string())
         .replace("{height}", &IMG_HEIGHT.to_string())
-        .replace("{images}", &images)
+        .replace("{defs}", &defs)
+        .replace("{uses}", &uses)
 }
 
 #[derive(serde::Deserialize)]
@@ -205,13 +236,13 @@ async fn get_image(
     let count = increment(&state.db, &name).await;
 
     let theme_key = query.theme.as_deref().unwrap_or(&state.default_theme);
-    let digits = state
+    let theme_data = state
         .themes
         .get(theme_key)
         .or_else(|| state.themes.get(&*state.default_theme))
         .or_else(|| state.themes.values().next());
 
-    let Some(d) = digits else {
+    let Some(td) = theme_data else {
         error!("no themes available");
         return HttpResponse::InternalServerError().body("no themes");
     };
@@ -219,7 +250,7 @@ async fn get_image(
     HttpResponse::Ok()
         .content_type("image/svg+xml")
         .insert_header(("Cache-Control", "no-cache, no-store, must-revalidate"))
-        .body(render_svg(d, count))
+        .body(render_svg(td, count))
 }
 
 #[derive(serde::Deserialize)]
